@@ -470,9 +470,23 @@ function SonoScanAI() {
     setImageUrl(url);
     setResult(null); setPipelineStage(1); setConsultScreen(null); setShowOriginal(false); setView("scan");
     const img = new Image();
-    img.onload = () => { imgDimRef.current = { w: img.naturalWidth, h: img.naturalHeight }; imgElRef.current = img; };
+    img.onload = () => {
+      imgDimRef.current = { w: img.naturalWidth, h: img.naturalHeight };
+      imgElRef.current = img;
+      // Auto-analyze
+      if (unet && classifier) {
+        setAnalyzing(true);
+        setTimeout(async () => {
+          try {
+            const res = await runRealInference(unet, classifier, img, img.naturalWidth, img.naturalHeight);
+            setPipelineStage(4); setResult(res); setAnalyzing(false);
+            setCases(prev => [{ filename: file.name, thumbnail: url, result: res, imgDim: { w: img.naturalWidth, h: img.naturalHeight } }, ...prev.slice(0, 19)]);
+          } catch (err) { console.error("Inference error:", err); setAnalyzing(false); setPipelineStage(0); }
+        }, 100);
+      }
+    };
     img.src = url;
-  }, []);
+  }, [unet, classifier]);
 
   const handleAnalyze = useCallback(async () => {
     if (!uploadedFile || !unet || !classifier || !imgElRef.current) return;
@@ -587,42 +601,37 @@ function SonoScanAI() {
               {!imageUrl ? (
                 <div onDragOver={e => e.preventDefault()} onDrop={handleDrop} onClick={() => fileRef.current?.click()} style={{ padding: "60px 24px", borderRadius: 14, border: "2px dashed #d1d9e6", background: "#f8fafc", textAlign: "center", cursor: "pointer" }}><UploadIcon size={36} color="#3d5170" /><p style={{ color: "#64748b", fontSize: 16, marginTop: 12 }}>Drop ultrasound image or click to browse</p></div>
               ) : (
-                <div>
-                  {/* Triage result banner — above image */}
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+                  {/* Triage result banner — centered above image */}
                   {result && (
                     <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", borderRadius: 12, marginBottom: 12, background: isMalignant ? "linear-gradient(135deg, rgba(239,68,68,0.04), rgba(254,242,242,0.8))" : "linear-gradient(135deg, rgba(34,197,94,0.04), rgba(240,253,244,0.8))", border: isMalignant ? "2px solid rgba(239,68,68,0.2)" : "2px solid rgba(34,197,94,0.2)", animation: "slideUp 0.3s ease" }}>
                       <div style={{ width: 36, height: 36, borderRadius: 9, background: isMalignant ? "rgba(239,68,68,0.08)" : "rgba(34,197,94,0.08)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{isMalignant ? <AlertIcon size={20} color="#ef4444" /> : <CheckIcon size={20} color="#22c55e" />}</div>
-                      <div><div style={{ fontSize: 16, fontWeight: 700, color: isMalignant ? "#ef4444" : "#22c55e" }}>{isMalignant ? "⚠ Malignant Lesion Detected" : "Benign — Low Risk"}</div><div style={{ fontSize: 13, color: "#64748b" }}>{isMalignant ? `Confidence: ${result.classification.confidence}% — Triage only, not a diagnosis.` : "AI triage suggests benign. Not a final diagnosis."}</div></div>
+                      <div style={{ fontSize: 16, fontWeight: 700, color: isMalignant ? "#ef4444" : "#22c55e" }}>{isMalignant ? "⚠ Malignant Lesion Detected" : "Benign — Low Risk"}</div>
                     </div>
                   )}
 
-                  <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
-                    {/* LEFT — Image + buttons below it */}
-                    <div style={{ flex: "0 0 auto", width: "min(360px, 100%)", position: "relative" }}>
-                      {analyzing && <div className="scan-line" />}
-                      {result && !showOriginal ? <OutputCanvas result={result} imageUrl={imageUrl} canvasRef={canvasRef} /> : (
-                        <div style={{ borderRadius: 12, overflow: "hidden", background: "#000" }}><img src={imageUrl} alt="Uploaded" style={{ width: "100%", display: "block", opacity: analyzing ? 0.6 : 1, transition: "opacity 0.3s" }} /></div>
-                      )}
-                      <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
-                        <button className="btn-outline" style={{ fontSize: 13, padding: "8px 14px" }} onClick={() => fileRef.current?.click()}><UploadIcon size={14} /> Upload</button>
-                        <button className="btn-primary" style={{ fontSize: 13, padding: "8px 14px" }} onClick={handleAnalyze} disabled={!uploadedFile || analyzing || !modelsReady}>
-                          {analyzing ? <><span style={{ animation: "pulse 1.5s infinite" }}>⏳</span> Analyzing...</> : <><ScanIcon size={14} /> Analyze</>}
-                        </button>
-                        {result && (<><button className="btn-outline" style={{ fontSize: 13, padding: "8px 14px" }} onClick={() => setShowOriginal(!showOriginal)}><EyeIcon size={14} /> {showOriginal ? "Result" : "Original"}</button><button className="btn-outline" style={{ fontSize: 13, padding: "8px 14px" }} onClick={handleDownload}><DownloadIcon size={14} /> Save</button></>)}
-                      </div>
-                    </div>
-
-                    {/* RIGHT — Radiologist buttons */}
-                    {result && (
-                      <div style={{ flex: "1 1 300px", minWidth: 280 }}>
-                        <div style={{ padding: 16, borderRadius: 14, background: isMalignant ? "linear-gradient(135deg, rgba(239,68,68,0.04), rgba(254,242,242,0.8))" : "linear-gradient(135deg, rgba(34,197,94,0.04), rgba(240,253,244,0.8))", border: isMalignant ? "2px solid rgba(239,68,68,0.2)" : "2px solid rgba(34,197,94,0.2)", animation: "slideUp 0.4s ease" }}>
-                          <button onClick={() => setConsultScreen("live")} style={{ width: "100%", padding: "14px 16px", borderRadius: 12, border: "none", borderBottom: "4px solid #075985", background: "linear-gradient(180deg, #0ea5e9, #0284c7)", color: "#fff", cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 12, marginBottom: 8, fontFamily: "inherit", boxShadow: "0 4px 14px rgba(14,165,233,0.25), inset 0 1px 0 rgba(255,255,255,0.2)", transition: "all 0.15s" }} onMouseDown={e => { e.currentTarget.style.transform = "translateY(2px)"; e.currentTarget.style.borderBottomWidth = "2px"; }} onMouseUp={e => { e.currentTarget.style.transform = ""; e.currentTarget.style.borderBottomWidth = "4px"; }} onMouseLeave={e => { e.currentTarget.style.transform = ""; e.currentTarget.style.borderBottomWidth = "4px"; }}><div style={{ width: 42, height: 42, borderRadius: 10, background: "rgba(255,255,255,0.15)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><VideoIcon size={22} color="#fff" /></div><div style={{ flex: 1 }}><div style={{ fontSize: 16, fontWeight: 700 }}>Connect to Live Radiologist</div><div style={{ fontSize: 13, opacity: 0.85, marginTop: 2 }}>Video meeting with board-certified radiologist</div></div><div style={{ fontSize: 20, flexShrink: 0 }}>→</div></button>
-                          <button onClick={() => setConsultScreen("async")} style={{ width: "100%", padding: "14px 16px", borderRadius: 12, border: "2px solid rgba(139,92,246,0.3)", borderBottom: "4px solid rgba(109,62,216,0.5)", background: "linear-gradient(180deg, rgba(139,92,246,0.14), rgba(168,85,247,0.08))", color: "#1e293b", cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 12, fontFamily: "inherit", boxShadow: "0 4px 14px rgba(139,92,246,0.12), inset 0 1px 0 rgba(255,255,255,0.5)", transition: "all 0.15s" }} onMouseDown={e => { e.currentTarget.style.transform = "translateY(2px)"; e.currentTarget.style.borderBottomWidth = "2px"; }} onMouseUp={e => { e.currentTarget.style.transform = ""; e.currentTarget.style.borderBottomWidth = "4px"; }} onMouseLeave={e => { e.currentTarget.style.transform = ""; e.currentTarget.style.borderBottomWidth = "4px"; }}><div style={{ width: 42, height: 42, borderRadius: 10, background: "rgba(139,92,246,0.1)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><ClockIcon size={22} color="#a855f7" /></div><div style={{ flex: 1 }}><div style={{ fontSize: 16, fontWeight: 700 }}>Request Image Interpretation</div><div style={{ fontSize: 13, color: "#64748b", marginTop: 2 }}>Final diagnosis from a radiologist within 24-48h</div></div><div style={{ fontSize: 20, flexShrink: 0, color: "#64748b" }}>→</div></button>
-                          <div style={{ marginTop: 10, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}><ShieldIcon size={12} color="#22c55e" /><span style={{ fontSize: 11, color: "#64748b" }}>SonoScan AI only triages — final diagnosis always from a board-certified radiologist.</span></div>
-                        </div>
-                      </div>
+                  {/* Centered image */}
+                  <div style={{ width: "min(360px, 100%)", position: "relative" }}>
+                    {analyzing && <div className="scan-line" />}
+                    {result && !showOriginal ? <OutputCanvas result={result} imageUrl={imageUrl} canvasRef={canvasRef} /> : (
+                      <div style={{ borderRadius: 12, overflow: "hidden", background: "#000" }}><img src={imageUrl} alt="Uploaded" style={{ width: "100%", display: "block", opacity: analyzing ? 0.6 : 1, transition: "opacity 0.3s" }} /></div>
                     )}
                   </div>
+
+                  {/* Centered buttons below image */}
+                  <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap", justifyContent: "center" }}>
+                    <button className="btn-outline" style={{ fontSize: 13, padding: "8px 14px" }} onClick={() => fileRef.current?.click()}><UploadIcon size={14} /> Upload</button>
+                    {result && (<><button className="btn-outline" style={{ fontSize: 13, padding: "8px 14px" }} onClick={() => setShowOriginal(!showOriginal)}><EyeIcon size={14} /> {showOriginal ? "Result" : "Original"}</button><button className="btn-outline" style={{ fontSize: 13, padding: "8px 14px" }} onClick={handleDownload}><DownloadIcon size={14} /> Save</button></>)}
+                  </div>
+
+                  {/* Centered radiologist buttons */}
+                  {result && (
+                    <div style={{ width: "100%", maxWidth: 500, marginTop: 16 }}>
+                      <button onClick={() => setConsultScreen("live")} style={{ width: "100%", padding: "14px 16px", borderRadius: 12, border: "none", borderBottom: "4px solid #075985", background: "linear-gradient(180deg, #0ea5e9, #0284c7)", color: "#fff", cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 12, marginBottom: 8, fontFamily: "inherit", boxShadow: "0 4px 14px rgba(14,165,233,0.25), inset 0 1px 0 rgba(255,255,255,0.2)", transition: "all 0.15s" }} onMouseDown={e => { e.currentTarget.style.transform = "translateY(2px)"; e.currentTarget.style.borderBottomWidth = "2px"; }} onMouseUp={e => { e.currentTarget.style.transform = ""; e.currentTarget.style.borderBottomWidth = "4px"; }} onMouseLeave={e => { e.currentTarget.style.transform = ""; e.currentTarget.style.borderBottomWidth = "4px"; }}><div style={{ width: 42, height: 42, borderRadius: 10, background: "rgba(255,255,255,0.15)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><VideoIcon size={22} color="#fff" /></div><div style={{ flex: 1 }}><div style={{ fontSize: 16, fontWeight: 700 }}>Connect to Live Radiologist</div><div style={{ fontSize: 13, opacity: 0.85, marginTop: 2 }}>Video meeting with board-certified radiologist</div></div><div style={{ fontSize: 20, flexShrink: 0 }}>→</div></button>
+                      <button onClick={() => setConsultScreen("async")} style={{ width: "100%", padding: "14px 16px", borderRadius: 12, border: "2px solid rgba(139,92,246,0.3)", borderBottom: "4px solid rgba(109,62,216,0.5)", background: "linear-gradient(180deg, rgba(139,92,246,0.14), rgba(168,85,247,0.08))", color: "#1e293b", cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 12, fontFamily: "inherit", boxShadow: "0 4px 14px rgba(139,92,246,0.12), inset 0 1px 0 rgba(255,255,255,0.5)", transition: "all 0.15s" }} onMouseDown={e => { e.currentTarget.style.transform = "translateY(2px)"; e.currentTarget.style.borderBottomWidth = "2px"; }} onMouseUp={e => { e.currentTarget.style.transform = ""; e.currentTarget.style.borderBottomWidth = "4px"; }} onMouseLeave={e => { e.currentTarget.style.transform = ""; e.currentTarget.style.borderBottomWidth = "4px"; }}><div style={{ width: 42, height: 42, borderRadius: 10, background: "rgba(139,92,246,0.1)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><ClockIcon size={22} color="#a855f7" /></div><div style={{ flex: 1 }}><div style={{ fontSize: 16, fontWeight: 700 }}>Request Image Interpretation</div><div style={{ fontSize: 13, color: "#64748b", marginTop: 2 }}>Final diagnosis from a radiologist within 24-48h</div></div><div style={{ fontSize: 20, flexShrink: 0, color: "#64748b" }}>→</div></button>
+                      <div style={{ marginTop: 10, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}><ShieldIcon size={12} color="#22c55e" /><span style={{ fontSize: 11, color: "#64748b" }}>SonoScan AI only triages — final diagnosis always from a board-certified radiologist.</span></div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
