@@ -328,14 +328,6 @@ function LiveCallScreen({ result, onBack }) {
         <button onClick={onBack} style={{ width: 48, height: 48, borderRadius: "50%", border: "none", background: "#ef4444", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><PhoneIcon size={20} color="#fff" /></button>
         <button style={{ width: 48, height: 48, borderRadius: "50%", border: "1px solid #d1d9e6", background: "#f0f4f8", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><ShieldIcon size={20} color="#22c55e" /></button>
       </div>
-      <div className="card" style={{ marginTop: 16, padding: 14 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>AI Triage Report Shared with Radiologist</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 8 }}>
-          {[{ val: result.classification.primary, sub: `${result.classification.confidence}% conf.`, c: "#ef4444", bg: "rgba(239,68,68,0.06)", bd: "rgba(239,68,68,0.12)" }].map((d, i) => (
-            <div key={i} style={{ padding: 8, borderRadius: 6, background: d.bg, border: `1px solid ${d.bd}`, textAlign: "center" }}><div style={{ fontSize: 16, fontWeight: 700, color: d.c }}>{d.val}</div><div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>{d.sub}</div></div>
-          ))}
-        </div>
-      </div>
     </div>
   );
 }
