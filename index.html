@@ -219,8 +219,6 @@ function renderOutputImage(canvas, img, result) {
 
   for (const region of result.regions) {
     if (region.classification === "Blood Vessel") continue;
-    ctx.strokeStyle = "#ff0000"; ctx.lineWidth = 3;
-    ctx.strokeRect(region.x, region.y, region.w, region.h);
 
     const labelText = region.classification === "Malignant"
       ? `Malignant confidence: ${region.confidence}%`
@@ -515,7 +513,7 @@ function SonoScanAI() {
   ];
 
   return (
-    <div style={{ minHeight: "100vh", background: "#f7f8fc", color: "#1e293b", fontFamily: "'DM Sans', 'Segoe UI', system-ui, sans-serif", display: "flex", flexDirection: "column" }}>
+    <div style={{ minHeight: "100vh", background: "#eef2f9", color: "#1e293b", fontFamily: "'DM Sans', 'Segoe UI', system-ui, sans-serif", display: "flex", flexDirection: "column" }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -586,58 +584,54 @@ function SonoScanAI() {
           {/* SCAN + RESULTS */}
           {view === "scan" && !consultScreen && (
             <div style={{ animation: "slideUp 0.3s ease" }}>
-              <div className="card" style={{ padding: "6px 14px", marginBottom: 14 }}><PipelineViz stage={pipelineStage} /></div>
               {!imageUrl ? (
                 <div onDragOver={e => e.preventDefault()} onDrop={handleDrop} onClick={() => fileRef.current?.click()} style={{ padding: "60px 24px", borderRadius: 14, border: "2px dashed #d1d9e6", background: "#f8fafc", textAlign: "center", cursor: "pointer" }}><UploadIcon size={36} color="#3d5170" /><p style={{ color: "#64748b", fontSize: 16, marginTop: 12 }}>Drop ultrasound image or click to browse</p></div>
               ) : (
-                <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
-                  {/* LEFT — Image (smaller) */}
-                  <div style={{ flex: "0 0 auto", width: "min(360px, 100%)", position: "relative" }}>
-                    {analyzing && <div className="scan-line" />}
-                    {result && !showOriginal ? <OutputCanvas result={result} imageUrl={imageUrl} canvasRef={canvasRef} /> : (
-                      <div style={{ borderRadius: 12, overflow: "hidden", background: "#000" }}><img src={imageUrl} alt="Uploaded" style={{ width: "100%", display: "block", opacity: analyzing ? 0.6 : 1, transition: "opacity 0.3s" }} /></div>
-                    )}
-                    {result && (<div style={{ display: "flex", gap: 16, marginTop: 10, flexWrap: "wrap", padding: "6px 10px", borderRadius: 8, background: "#f5f8fc", border: "1px solid #e2e8f0" }}>
-                      <span style={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>Legend:</span>
-                      <span style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}><span style={{ width: 12, height: 12, borderRadius: 2, background: "rgba(0,255,0,0.35)", border: "1.5px solid rgba(0,255,0,0.6)", display: "inline-block" }} /> <span style={{ color: "#64748b" }}>Mask</span></span>
-                      <span style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}><span style={{ width: 12, height: 12, borderRadius: 2, border: "2px solid #ff0000", display: "inline-block" }} /> <span style={{ color: "#64748b" }}>Box</span></span>
-                      <span style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}><span style={{ width: 7, height: 7, borderRadius: "50%", background: "#00ff00", display: "inline-block" }} /> <span style={{ color: "#64748b" }}>Benign</span></span>
-                      <span style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}><span style={{ width: 7, height: 7, borderRadius: "50%", background: "#ff0000", display: "inline-block" }} /> <span style={{ color: "#64748b" }}>Malignant</span></span>
-                    </div>)}
-                    <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
-                      <button className="btn-outline" style={{ fontSize: 13, padding: "8px 14px" }} onClick={() => fileRef.current?.click()}><UploadIcon size={14} /> New</button>
-                      <button className="btn-primary" style={{ fontSize: 13, padding: "8px 14px" }} onClick={handleAnalyze} disabled={!uploadedFile || analyzing || !modelsReady}>
-                        {analyzing ? <><span style={{ animation: "pulse 1.5s infinite" }}>⏳</span> Analyzing...</> : <><ScanIcon size={14} /> Analyze</>}
-                      </button>
-                      {result && (<><button className="btn-outline" style={{ fontSize: 13, padding: "8px 14px" }} onClick={() => setShowOriginal(!showOriginal)}><EyeIcon size={14} /> {showOriginal ? "Result" : "Original"}</button><button className="btn-outline" style={{ fontSize: 13, padding: "8px 14px" }} onClick={handleDownload}><DownloadIcon size={14} /> Save</button></>)}
-                    </div>
+                <div>
+                  {/* TOP — Action buttons */}
+                  <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+                    <button className="btn-outline" style={{ fontSize: 13, padding: "8px 14px" }} onClick={() => fileRef.current?.click()}><UploadIcon size={14} /> New</button>
+                    <button className="btn-primary" style={{ fontSize: 13, padding: "8px 14px" }} onClick={handleAnalyze} disabled={!uploadedFile || analyzing || !modelsReady}>
+                      {analyzing ? <><span style={{ animation: "pulse 1.5s infinite" }}>⏳</span> Analyzing...</> : <><ScanIcon size={14} /> Analyze</>}
+                    </button>
+                    {result && (<><button className="btn-outline" style={{ fontSize: 13, padding: "8px 14px" }} onClick={() => setShowOriginal(!showOriginal)}><EyeIcon size={14} /> {showOriginal ? "Result" : "Original"}</button><button className="btn-outline" style={{ fontSize: 13, padding: "8px 14px" }} onClick={handleDownload}><DownloadIcon size={14} /> Save</button></>)}
                   </div>
 
-                  {/* RIGHT — Results panel */}
-                  {result && (
-                    <div style={{ flex: "1 1 300px", minWidth: 280 }}>
-                      {/* Stats */}
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
-                        <div className="stat-card"><div style={{ fontSize: 12, color: "#64748b", marginBottom: 4 }}>AI Triage</div><div style={{ fontSize: 18, fontWeight: 700, color: isMalignant ? "#ef4444" : "#22c55e" }}>{result.classification.primary}</div><div style={{ fontSize: 13, color: "#64748b", fontFamily: "'JetBrains Mono', monospace" }}>{result.classification.confidence}%</div></div>
-                        <div className="stat-card"><div style={{ fontSize: 12, color: "#64748b", marginBottom: 4 }}>Regions</div><div style={{ fontSize: 18, fontWeight: 700, color: "#fbbf24" }}>{result.regions.length}</div><div style={{ fontSize: 13, color: "#64748b", fontFamily: "'JetBrains Mono', monospace" }}>detected</div></div>
-                      </div>
-
-                      {/* Triage + radiologist buttons */}
-                      <div style={{ padding: 16, borderRadius: 14, background: isMalignant ? "linear-gradient(135deg, rgba(239,68,68,0.04), rgba(254,242,242,0.8))" : "linear-gradient(135deg, rgba(34,197,94,0.04), rgba(240,253,244,0.8))", border: isMalignant ? "2px solid rgba(239,68,68,0.2)" : "2px solid rgba(34,197,94,0.2)", animation: "slideUp 0.4s ease", marginBottom: 12 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}><div style={{ width: 36, height: 36, borderRadius: 9, background: isMalignant ? "rgba(239,68,68,0.08)" : "rgba(34,197,94,0.08)", display: "flex", alignItems: "center", justifyContent: "center" }}>{isMalignant ? <AlertIcon size={20} color="#ef4444" /> : <CheckIcon size={20} color="#22c55e" />}</div><div><div style={{ fontSize: 16, fontWeight: 700, color: isMalignant ? "#ef4444" : "#22c55e" }}>{isMalignant ? "⚠ Malignant Lesion Detected" : "Benign — Low Risk"}</div><div style={{ fontSize: 13, color: "#64748b" }}>{isMalignant ? `Confidence: ${result.classification.confidence}% — Triage only, not a diagnosis.` : "AI triage suggests benign. Not a final diagnosis."}</div></div></div>
-                        <button onClick={() => setConsultScreen("live")} style={{ width: "100%", padding: "14px 16px", borderRadius: 12, border: "none", borderBottom: "4px solid #075985", background: "linear-gradient(180deg, #0ea5e9, #0284c7)", color: "#fff", cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 12, marginBottom: 8, fontFamily: "inherit", boxShadow: "0 4px 14px rgba(14,165,233,0.25), inset 0 1px 0 rgba(255,255,255,0.2)", transition: "all 0.15s" }} onMouseDown={e => { e.currentTarget.style.transform = "translateY(2px)"; e.currentTarget.style.borderBottomWidth = "2px"; }} onMouseUp={e => { e.currentTarget.style.transform = ""; e.currentTarget.style.borderBottomWidth = "4px"; }} onMouseLeave={e => { e.currentTarget.style.transform = ""; e.currentTarget.style.borderBottomWidth = "4px"; }}><div style={{ width: 42, height: 42, borderRadius: 10, background: "rgba(255,255,255,0.15)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><VideoIcon size={22} color="#fff" /></div><div style={{ flex: 1 }}><div style={{ fontSize: 16, fontWeight: 700 }}>Connect to Live Radiologist</div><div style={{ fontSize: 13, opacity: 0.85, marginTop: 2 }}>Video meeting with board-certified radiologist</div></div><div style={{ fontSize: 20, flexShrink: 0 }}>→</div></button>
-                        <button onClick={() => setConsultScreen("async")} style={{ width: "100%", padding: "14px 16px", borderRadius: 12, border: "2px solid rgba(139,92,246,0.3)", borderBottom: "4px solid rgba(109,62,216,0.5)", background: "linear-gradient(180deg, rgba(139,92,246,0.14), rgba(168,85,247,0.08))", color: "#1e293b", cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 12, fontFamily: "inherit", boxShadow: "0 4px 14px rgba(139,92,246,0.12), inset 0 1px 0 rgba(255,255,255,0.5)", transition: "all 0.15s" }} onMouseDown={e => { e.currentTarget.style.transform = "translateY(2px)"; e.currentTarget.style.borderBottomWidth = "2px"; }} onMouseUp={e => { e.currentTarget.style.transform = ""; e.currentTarget.style.borderBottomWidth = "4px"; }} onMouseLeave={e => { e.currentTarget.style.transform = ""; e.currentTarget.style.borderBottomWidth = "4px"; }}><div style={{ width: 42, height: 42, borderRadius: 10, background: "rgba(139,92,246,0.1)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><ClockIcon size={22} color="#a855f7" /></div><div style={{ flex: 1 }}><div style={{ fontSize: 16, fontWeight: 700 }}>Request Image Interpretation</div><div style={{ fontSize: 13, color: "#64748b", marginTop: 2 }}>Final diagnosis from a radiologist within 24-48h</div></div><div style={{ fontSize: 20, flexShrink: 0, color: "#64748b" }}>→</div></button>
-                        <div style={{ marginTop: 10, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}><ShieldIcon size={12} color="#22c55e" /><span style={{ fontSize: 11, color: "#64748b" }}>SonoScan AI only triages — final diagnosis always from a board-certified radiologist.</span></div>
-                      </div>
-
-                      {/* Region detail */}
-                      <div className="card" style={{ padding: 14 }}>
-                        <div style={{ fontSize: 13, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Triage Detail by Region</div>
-                        {result.regions.map((r, i) => (<div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", borderRadius: 8, background: "#f5f8fc", border: "1px solid #e2e8f0", marginBottom: 4 }}><span style={{ fontSize: 14, fontWeight: 600 }}>Region {i + 1}</span><div style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={{ fontSize: 13, color: "#64748b", fontFamily: "'JetBrains Mono', monospace" }}>{r.confidence}%</span><span style={{ padding: "2px 8px", borderRadius: 5, fontSize: 12, fontWeight: 700, background: r.classification === "Malignant" ? "rgba(239,68,68,0.15)" : r.classification === "Benign" ? "rgba(34,197,94,0.15)" : "rgba(148,163,184,0.1)", color: r.classification === "Malignant" ? "#ef4444" : r.classification === "Benign" ? "#22c55e" : "#94a3b8" }}>{r.classification}</span></div></div>))}
-                        <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 6 }}><ShieldIcon size={12} color="#0ea5e9" /><span style={{ fontSize: 12, color: "#64748b" }}>All analysis runs locally in-browser. No patient images leave your device.</span></div>
-                      </div>
+                  <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
+                    {/* LEFT — Image (smaller) */}
+                    <div style={{ flex: "0 0 auto", width: "min(360px, 100%)", position: "relative" }}>
+                      {analyzing && <div className="scan-line" />}
+                      {result && !showOriginal ? <OutputCanvas result={result} imageUrl={imageUrl} canvasRef={canvasRef} /> : (
+                        <div style={{ borderRadius: 12, overflow: "hidden", background: "#000" }}><img src={imageUrl} alt="Uploaded" style={{ width: "100%", display: "block", opacity: analyzing ? 0.6 : 1, transition: "opacity 0.3s" }} /></div>
+                      )}
+                      {result && (<div style={{ display: "flex", gap: 12, marginTop: 10, flexWrap: "wrap", padding: "6px 10px", borderRadius: 8, background: "#f5f8fc", border: "1px solid #e2e8f0" }}>
+                        <span style={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>Legend:</span>
+                        <span style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}><span style={{ width: 12, height: 12, borderRadius: 2, background: "rgba(0,255,0,0.35)", border: "1.5px solid rgba(0,255,0,0.6)", display: "inline-block" }} /> <span style={{ color: "#64748b" }}>Mask</span></span>
+                        <span style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}><span style={{ width: 7, height: 7, borderRadius: "50%", background: "#00ff00", display: "inline-block" }} /> <span style={{ color: "#64748b" }}>Benign</span></span>
+                        <span style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}><span style={{ width: 7, height: 7, borderRadius: "50%", background: "#ff0000", display: "inline-block" }} /> <span style={{ color: "#64748b" }}>Malignant</span></span>
+                      </div>)}
                     </div>
-                  )}
+
+                    {/* RIGHT — Results panel */}
+                    {result && (
+                      <div style={{ flex: "1 1 300px", minWidth: 280 }}>
+                        {/* Triage + radiologist buttons */}
+                        <div style={{ padding: 16, borderRadius: 14, background: isMalignant ? "linear-gradient(135deg, rgba(239,68,68,0.04), rgba(254,242,242,0.8))" : "linear-gradient(135deg, rgba(34,197,94,0.04), rgba(240,253,244,0.8))", border: isMalignant ? "2px solid rgba(239,68,68,0.2)" : "2px solid rgba(34,197,94,0.2)", animation: "slideUp 0.4s ease", marginBottom: 12 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}><div style={{ width: 36, height: 36, borderRadius: 9, background: isMalignant ? "rgba(239,68,68,0.08)" : "rgba(34,197,94,0.08)", display: "flex", alignItems: "center", justifyContent: "center" }}>{isMalignant ? <AlertIcon size={20} color="#ef4444" /> : <CheckIcon size={20} color="#22c55e" />}</div><div><div style={{ fontSize: 16, fontWeight: 700, color: isMalignant ? "#ef4444" : "#22c55e" }}>{isMalignant ? "⚠ Malignant Lesion Detected" : "Benign — Low Risk"}</div><div style={{ fontSize: 13, color: "#64748b" }}>{isMalignant ? `Confidence: ${result.classification.confidence}% — Triage only, not a diagnosis.` : "AI triage suggests benign. Not a final diagnosis."}</div></div></div>
+                          <button onClick={() => setConsultScreen("live")} style={{ width: "100%", padding: "14px 16px", borderRadius: 12, border: "none", borderBottom: "4px solid #075985", background: "linear-gradient(180deg, #0ea5e9, #0284c7)", color: "#fff", cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 12, marginBottom: 8, fontFamily: "inherit", boxShadow: "0 4px 14px rgba(14,165,233,0.25), inset 0 1px 0 rgba(255,255,255,0.2)", transition: "all 0.15s" }} onMouseDown={e => { e.currentTarget.style.transform = "translateY(2px)"; e.currentTarget.style.borderBottomWidth = "2px"; }} onMouseUp={e => { e.currentTarget.style.transform = ""; e.currentTarget.style.borderBottomWidth = "4px"; }} onMouseLeave={e => { e.currentTarget.style.transform = ""; e.currentTarget.style.borderBottomWidth = "4px"; }}><div style={{ width: 42, height: 42, borderRadius: 10, background: "rgba(255,255,255,0.15)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><VideoIcon size={22} color="#fff" /></div><div style={{ flex: 1 }}><div style={{ fontSize: 16, fontWeight: 700 }}>Connect to Live Radiologist</div><div style={{ fontSize: 13, opacity: 0.85, marginTop: 2 }}>Video meeting with board-certified radiologist</div></div><div style={{ fontSize: 20, flexShrink: 0 }}>→</div></button>
+                          <button onClick={() => setConsultScreen("async")} style={{ width: "100%", padding: "14px 16px", borderRadius: 12, border: "2px solid rgba(139,92,246,0.3)", borderBottom: "4px solid rgba(109,62,216,0.5)", background: "linear-gradient(180deg, rgba(139,92,246,0.14), rgba(168,85,247,0.08))", color: "#1e293b", cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 12, fontFamily: "inherit", boxShadow: "0 4px 14px rgba(139,92,246,0.12), inset 0 1px 0 rgba(255,255,255,0.5)", transition: "all 0.15s" }} onMouseDown={e => { e.currentTarget.style.transform = "translateY(2px)"; e.currentTarget.style.borderBottomWidth = "2px"; }} onMouseUp={e => { e.currentTarget.style.transform = ""; e.currentTarget.style.borderBottomWidth = "4px"; }} onMouseLeave={e => { e.currentTarget.style.transform = ""; e.currentTarget.style.borderBottomWidth = "4px"; }}><div style={{ width: 42, height: 42, borderRadius: 10, background: "rgba(139,92,246,0.1)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><ClockIcon size={22} color="#a855f7" /></div><div style={{ flex: 1 }}><div style={{ fontSize: 16, fontWeight: 700 }}>Request Image Interpretation</div><div style={{ fontSize: 13, color: "#64748b", marginTop: 2 }}>Final diagnosis from a radiologist within 24-48h</div></div><div style={{ fontSize: 20, flexShrink: 0, color: "#64748b" }}>→</div></button>
+                          <div style={{ marginTop: 10, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}><ShieldIcon size={12} color="#22c55e" /><span style={{ fontSize: 11, color: "#64748b" }}>SonoScan AI only triages — final diagnosis always from a board-certified radiologist.</span></div>
+                        </div>
+
+                        {/* Region detail */}
+                        <div className="card" style={{ padding: 14 }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Triage Detail by Region</div>
+                          {result.regions.map((r, i) => (<div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", borderRadius: 8, background: "#f5f8fc", border: "1px solid #e2e8f0", marginBottom: 4 }}><span style={{ fontSize: 14, fontWeight: 600 }}>Region {i + 1}</span><div style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={{ fontSize: 13, color: "#64748b", fontFamily: "'JetBrains Mono', monospace" }}>{r.confidence}%</span><span style={{ padding: "2px 8px", borderRadius: 5, fontSize: 12, fontWeight: 700, background: r.classification === "Malignant" ? "rgba(239,68,68,0.15)" : r.classification === "Benign" ? "rgba(34,197,94,0.15)" : "rgba(148,163,184,0.1)", color: r.classification === "Malignant" ? "#ef4444" : r.classification === "Benign" ? "#22c55e" : "#94a3b8" }}>{r.classification}</span></div></div>))}
+                          <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 6 }}><ShieldIcon size={12} color="#0ea5e9" /><span style={{ fontSize: 12, color: "#64748b" }}>All analysis runs locally in-browser. No patient images leave your device.</span></div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
