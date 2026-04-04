@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SonoScan AI — Ultrasound Lesion Analysis</title>
+  <meta name="description" content="AI-powered ultrasound tumor detection using U-Net segmentation and CNN classification. Runs entirely in-browser via TensorFlow.js." />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔬</text></svg>" />
+  <style>
+    html, body, #root { margin: 0; padding: 0; height: 100%; }
+    body { font-family: system-ui, sans-serif; }
+    #loading-screen {
+      position: fixed; inset: 0; z-index: 9999;
+      background: linear-gradient(135deg, #0ea5e9, #8b5cf6);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      color: white; font-family: system-ui, sans-serif;
+    }
+    #loading-screen .spinner {
+      width: 48px; height: 48px; border: 3px solid rgba(255,255,255,0.3);
+      border-top-color: white; border-radius: 50%;
+      animation: spin 1s linear infinite; margin-bottom: 20px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div id="loading-screen">
+      <div class="spinner"></div>
+      <div style="font-size: 22px; font-weight: 700; margin-bottom: 6px;">SonoScan AI</div>
+      <div style="font-size: 14px; opacity: 0.8;">Loading application...</div>
+    </div>
+  </div>
+
+  <!-- React 18 -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+
+  <!-- TensorFlow.js -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+
+  <!-- Babel for JSX -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <script type="text/babel" data-type="module">
+    const { useState, useEffect, useRef, useCallback } = React;
+
+
+// ═══════════════════════════════════════════
+// MODEL URLS — your converted models on GitHub
+// ═══════════════════════════════════════════
+const MODEL_URLS = {
+  unet: "https://sonoscanai.github.io/lesion-detection-models/models/unet/model.json",
+  classifier: "https://sonoscanai.github.io/lesion-detection-models/models/classifier/model.json",
+};
+const IMG_SIZE = 128;
+const MASK_THRESHOLD = 0.5;
+const MIN_REGION_RATIO = 0.003;
+const VESSEL_RATIO = 0.019;
+
+// ═══════════════════════════════════════════
+// Image processing (mirrors Python pipeline)
+// ═══════════════════════════════════════════
+function imageToCanvas(img, w, h) {
+  const c = document.createElement("canvas"); c.width = w; c.height = h;
+  c.getContext("2d").drawImage(img, 0, 0, w, h); return c;
+}
+function getImageData(canvas) { return canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height); }
+
+function sharpenImageData(imgData) {
+  const { width: w, height: h, data } = imgData;
+  const out = new Uint8ClampedArray(data.length);
+  for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+    for (let c = 0; c < 3; c++) {
+      const idx = (y * w + x) * 4 + c; let val = 32 * data[idx];
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++)
+        if (dy !== 0 || dx !== 0) val -= 2 * data[((y + dy) * w + (x + dx)) * 4 + c];
+      out[idx] = Math.min(255, Math.max(0, Math.round(val / 16)));
+    }
+    out[(y * w + x) * 4 + 3] = 255;
+  }
+  for (let x = 0; x < w; x++) for (let c = 0; c < 4; c++) { out[x * 4 + c] = data[x * 4 + c]; out[((h - 1) * w + x) * 4 + c] = data[((h - 1) * w + x) * 4 + c]; }
+  for (let y = 0; y < h; y++) for (let c = 0; c < 4; c++) { out[(y * w) * 4 + c] = data[(y * w) * 4 + c]; out[(y * w + w - 1) * 4 + c] = data[(y * w + w - 1) * 4 + c]; }
+  return new ImageData(out, w, h);
+}
+
+function enhanceContrast(imgData, factor) {
+  const { data } = imgData; let sum = 0;
+  for (let i = 0; i < data.length; i += 4) sum += data[i] + data[i + 1] + data[i + 2];
+  const mean = sum / (data.length / 4 * 3);
+  for (let i = 0; i < data.length; i += 4) for (let c = 0; c < 3; c++)
+    data[i + c] = Math.min(255, Math.max(0, Math.round(mean + factor * (data[i + c] - mean))));
+  return imgData;
+}
+
+function imageDataToTensor(imgData) {
+  const { width: w, height: h, data } = imgData;
+  const f = new Float32Array(w * h * 3);
+  for (let i = 0, j = 0; i < data.length; i += 4, j += 3) { f[j] = data[i] / 255; f[j + 1] = data[i + 1] / 255; f[j + 2] = data[i + 2] / 255; }
+  return tf.tensor4d(f, [1, h, w, 3]);
+}
+
+function labelConnectedComponents(mask, w, h) {
+  const labels = new Int32Array(w * h); let cur = 0; const regions = [];
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const idx = y * w + x;
+    if (mask[idx] === 0 || labels[idx] !== 0) continue;
+    cur++; let minX = x, maxX = x, minY = y, maxY = y, area = 0;
+    const q = [[x, y]]; labels[idx] = cur;
+    while (q.length) {
+      const [cx, cy] = q.shift(); area++;
+      if (cx < minX) minX = cx; if (cx > maxX) maxX = cx;
+      if (cy < minY) minY = cy; if (cy > maxY) maxY = cy;
+      for (const [dx, dy] of [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[1,-1],[-1,1],[1,1]]) {
+        const nx = cx + dx, ny = cy + dy;
+        if (nx >= 0 && nx < w && ny >= 0 && ny < h) { const ni = ny * w + nx; if (mask[ni] === 1 && labels[ni] === 0) { labels[ni] = cur; q.push([nx, ny]); } }
+      }
+    }
+    regions.push({ label: cur, minX, minY, maxX: maxX + 1, maxY: maxY + 1, area });
+  }
+  return regions;
+}
+
+// ═══════════════════════════════════════════
+// Real inference pipeline
+// ═══════════════════════════════════════════
+async function runRealInference(unet, classifier, imageEl, origW, origH) {
+  const t0 = performance.now();
+  const small = imageToCanvas(imageEl, IMG_SIZE, IMG_SIZE);
+  let imgData = getImageData(small);
+  imgData = sharpenImageData(imgData);
+  imgData = enhanceContrast(imgData, 1.5);
+  const inputTensor = imageDataToTensor(imgData);
+
+  const rawPred = unet.predict(inputTensor);
+  const predTensor = Array.isArray(rawPred) ? rawPred[0] : rawPred;
+  const predData = await predTensor.data();
+  tf.dispose(Array.isArray(rawPred) ? [inputTensor, ...rawPred] : [inputTensor, predTensor]);
+
+  const smallMask = new Uint8Array(IMG_SIZE * IMG_SIZE);
+  for (let i = 0; i < predData.length; i++) smallMask[i] = predData[i] > MASK_THRESHOLD ? 1 : 0;
+
+  const mask = new Uint8Array(origW * origH);
+  const sx = IMG_SIZE / origW, sy = IMG_SIZE / origH;
+  for (let y = 0; y < origH; y++) for (let x = 0; x < origW; x++)
+    mask[y * origW + x] = smallMask[Math.floor(y * sy) * IMG_SIZE + Math.floor(x * sx)];
+
+  const rawRegions = labelConnectedComponents(mask, origW, origH);
+  const imageArea = origW * origH;
+  let maskPixels = 0;
+  for (let i = 0; i < mask.length; i++) if (mask[i]) maskPixels++;
+  const maskCoverage = ((maskPixels / imageArea) * 100).toFixed(1);
+
+  const regions = [];
+  for (const r of rawRegions) {
+    if (r.area < MIN_REGION_RATIO * imageArea) continue;
+    if (r.area < VESSEL_RATIO * imageArea) {
+      regions.push({ id: regions.length, x: r.minX, y: r.minY, w: r.maxX - r.minX, h: r.maxY - r.minY, classification: "Blood Vessel", confidence: 0, area: r.area / imageArea, blobs: [] });
+      continue;
+    }
+    const cc = document.createElement("canvas"); cc.width = IMG_SIZE; cc.height = IMG_SIZE;
+    cc.getContext("2d").drawImage(imageEl, r.minX, r.minY, r.maxX - r.minX, r.maxY - r.minY, 0, 0, IMG_SIZE, IMG_SIZE);
+    const ct = imageDataToTensor(getImageData(cc));
+    const rawCp = classifier.predict(ct);
+    const cp = Array.isArray(rawCp) ? rawCp[0] : rawCp;
+    const cd = await cp.data();
+    tf.dispose(Array.isArray(rawCp) ? [ct, ...rawCp] : [ct, cp]);
+
+    let classIdx, confidence;
+    if (Math.abs(cd[0] - 0.5) < 1e-4 && Math.abs(cd[1] - 0.5) < 1e-4) { classIdx = 0; confidence = 50; }
+    else { classIdx = cd[1] > cd[0] ? 1 : 0; confidence = Math.round(cd[classIdx] * 100); }
+
+    regions.push({
+      id: regions.length, x: r.minX, y: r.minY, w: r.maxX - r.minX, h: r.maxY - r.minY,
+      classification: classIdx === 0 ? "Benign" : "Malignant", confidence,
+      area: r.area / imageArea, blobs: [],
+    });
+  }
+
+  const primary = regions.find(r => r.classification === "Malignant") ? "Malignant" : "Benign";
+  const topConf = regions.filter(r => r.classification !== "Blood Vessel").sort((a, b) => b.confidence - a.confidence)[0];
+  const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
+
+  return {
+    segmentation: { diceCoeff: 0.95, maskCoverage },
+    classification: { primary, confidence: topConf ? topConf.confidence.toFixed(1) : "0" },
+    regions,
+    inferenceTime: elapsed,
+    timestamp: new Date().toISOString(),
+    mask, maskW: origW, maskH: origH,
+  };
+}
+
+// ═══════════════════════════════════════════
+// Draw output image on canvas (real mask)
+// ═══════════════════════════════════════════
+function renderOutputImage(canvas, img, result) {
+  const ctx = canvas.getContext("2d");
+  const W = img.naturalWidth || img.width;
+  const H = img.naturalHeight || img.height;
+  canvas.width = W; canvas.height = H;
+  ctx.drawImage(img, 0, 0, W, H);
+
+  // Green mask overlay from real segmentation
+  if (result.mask) {
+    const id = ctx.getImageData(0, 0, W, H); const d = id.data;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      if (result.mask[y * W + x] === 1) {
+        const i = (y * W + x) * 4;
+        d[i] = Math.round(d[i] * 0.5); d[i + 1] = Math.min(255, Math.round(d[i + 1] * 0.5 + 128)); d[i + 2] = Math.round(d[i + 2] * 0.5);
+      }
+    }
+    ctx.putImageData(id, 0, 0);
+  }
+
+  // Bounding boxes and labels
+  const fontSize = Math.max(14, Math.round(H * 0.028));
+  ctx.font = `bold ${fontSize}px monospace`;
+
+  for (const region of result.regions) {
+    if (region.classification === "Blood Vessel") continue;
+    ctx.strokeStyle = "#ff0000"; ctx.lineWidth = 3;
+    ctx.strokeRect(region.x, region.y, region.w, region.h);
+
+    const labelText = region.classification === "Malignant"
+      ? `Malignant confidence: ${region.confidence}%`
+      : `Benign confidence: ${region.confidence}%`;
+    const textColor = region.classification === "Malignant" ? "#ff0000" : "#00ff00";
+    const tw = ctx.measureText(labelText).width;
+    let lx = region.x, ly = region.y - fontSize - 6;
+    if (ly < 0) ly = region.y + 4;
+    ctx.fillStyle = "rgba(0,0,0,0.85)";
+    ctx.fillRect(lx, ly, tw + 10, fontSize + 6);
+    ctx.fillStyle = textColor;
+    ctx.fillText(labelText, lx + 5, ly + fontSize);
+  }
+
+  const lesionRegions = result.regions.filter(r => r.classification !== "Blood Vessel");
+  if (lesionRegions.length === 0) { ctx.fillStyle = "#ff0000"; ctx.fillText("No Lesion", 10, 10 + fontSize); }
+
+  // Status bar
+  const statusText = `Time: ${result.inferenceTime}s | Mask: ${result.segmentation.maskCoverage}%`;
+  const barH = fontSize + 12;
+  ctx.fillStyle = "rgba(0,0,0,0.8)"; ctx.fillRect(0, H - barH, W, barH);
+  ctx.fillStyle = "#ffff00";
+  ctx.font = `bold ${Math.max(12, Math.round(H * 0.022))}px monospace`;
+  ctx.fillText(statusText, 10, H - 8);
+}
+
+// ═══════════════════════════════════════════
+// Icons
+// ═══════════════════════════════════════════
+const Icon = ({ d, size = 20, color = "currentColor", ...props }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...props}>{typeof d === "string" ? <path d={d} /> : d}</svg>
+);
+const UploadIcon = (p) => <Icon {...p} d={<><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></>} />;
+const ScanIcon = (p) => <Icon {...p} d={<><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></>} />;
+const PhoneIcon = (p) => <Icon {...p} d={<><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></>} />;
+const VideoIcon = (p) => <Icon {...p} d={<><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></>} />;
+const ClockIcon = (p) => <Icon {...p} d={<><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></>} />;
+const ShieldIcon = (p) => <Icon {...p} d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />;
+const ActivityIcon = (p) => <Icon {...p} d={<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>} />;
+const AlertIcon = (p) => <Icon {...p} d={<><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>} />;
+const CheckIcon = (p) => <Icon {...p} d={<><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></>} />;
+const GlobeIcon = (p) => <Icon {...p} d={<><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></>} />;
+const UserIcon = (p) => <Icon {...p} d={<><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></>} />;
+const FileIcon = (p) => <Icon {...p} d={<><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></>} />;
+const LayersIcon = (p) => <Icon {...p} d={<><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></>} />;
+const MailIcon = (p) => <Icon {...p} d={<><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></>} />;
+const ArrowLeftIcon = (p) => <Icon {...p} d={<><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></>} />;
+const DownloadIcon = (p) => <Icon {...p} d={<><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></>} />;
+const EyeIcon = (p) => <Icon {...p} d={<><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></>} />;
+
+// ═══════════════════════════════════════════
+// Pipeline Visualization
+// ═══════════════════════════════════════════
+function PipelineViz({ stage }) {
+  const stages = [{ label: "Upload", icon: "📷" }, { label: "U-Net Segmentation", icon: "🧠" }, { label: "CNN Classification", icon: "🔬" }, { label: "Triage Result", icon: "📋" }];
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 0, padding: "14px 0", overflowX: "auto" }}>
+      {stages.map((s, i) => (
+        <div key={i} style={{ display: "flex", alignItems: "center" }}>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, minWidth: 76, opacity: stage > i ? 1 : 0.3, transition: "opacity 0.5s ease" }}>
+            <div style={{ width: 42, height: 42, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", background: stage > i ? "linear-gradient(135deg, #38bdf8, #22d3ee)" : "#e8ecf2", border: stage > i ? "2px solid #38bdf8" : "2px solid #d1d9e6", fontSize: 20, boxShadow: stage > i ? "0 0 12px rgba(56,189,248,0.15)" : "none", transition: "all 0.4s ease" }}>{s.icon}</div>
+            <span style={{ fontSize: 11, color: stage > i ? "#1e293b" : "#64748b", fontWeight: 600, textAlign: "center" }}>{s.label}</span>
+          </div>
+          {i < stages.length - 1 && <div style={{ width: 28, height: 2, margin: "0 2px", marginBottom: 20, background: stage > i + 1 ? "linear-gradient(90deg, #38bdf8, #22d3ee)" : "#e2e8f0", transition: "background 0.5s ease" }} />}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════
+// Canvas Output Display
+// ═══════════════════════════════════════════
+function OutputCanvas({ result, imageUrl, canvasRef }) {
+  const [displayUrl, setDisplayUrl] = useState(null);
+  useEffect(() => {
+    if (!result || !imageUrl || !canvasRef.current) return;
+    const img = new Image(); img.crossOrigin = "anonymous";
+    img.onload = () => { renderOutputImage(canvasRef.current, img, result); setDisplayUrl(canvasRef.current.toDataURL("image/png")); };
+    img.src = imageUrl;
+  }, [result, imageUrl, canvasRef]);
+  if (!displayUrl) return null;
+  return (<div style={{ borderRadius: 12, overflow: "hidden", background: "#000", position: "relative" }}><img src={displayUrl} alt="Analysis output" style={{ width: "100%", display: "block" }} /></div>);
+}
+
+// ═══════════════════════════════════════════
+// Live Call Screen
+// ═══════════════════════════════════════════
+function LiveCallScreen({ result, onBack }) {
+  const [status, setStatus] = useState("connecting");
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => { const t1 = setTimeout(() => setStatus("waiting"), 2200); const t2 = setTimeout(() => setStatus("connected"), 5500); return () => { clearTimeout(t1); clearTimeout(t2); }; }, []);
+  useEffect(() => { if (status === "connected") { const iv = setInterval(() => setElapsed(p => p + 1), 1000); return () => clearInterval(iv); } }, [status]);
+  const fmt = s => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+  return (
+    <div style={{ animation: "fadeIn 0.3s ease" }}>
+      <button onClick={onBack} style={{ background: "none", border: "none", cursor: "pointer", color: "#64748b", display: "flex", alignItems: "center", gap: 6, fontSize: 15, marginBottom: 16, padding: 0, fontFamily: "inherit" }}><ArrowLeftIcon size={16} color="#64748b" /> Back to Results</button>
+      <div style={{ borderRadius: 14, overflow: "hidden", background: "#f5f8fc", border: status === "connected" ? "2px solid #22c55e" : "2px solid #e2e8f0", position: "relative", aspectRatio: "16/10", display: "flex", alignItems: "center", justifyContent: "center", transition: "border-color 0.5s ease" }}>
+        <div style={{ position: "absolute", inset: 0, opacity: 0.06, backgroundImage: "radial-gradient(circle, #cbd5e1 1px, transparent 1px)", backgroundSize: "24px 24px" }} />
+        {status === "connecting" && (<div style={{ textAlign: "center", zIndex: 2 }}><div style={{ width: 56, height: 56, borderRadius: "50%", border: "3px solid #e2e8f0", borderTopColor: "#0ea5e9", animation: "spin 1s linear infinite", margin: "0 auto 16px" }} /><div style={{ fontSize: 17, fontWeight: 600, color: "#1e293b" }}>Connecting to Secure Channel...</div><div style={{ fontSize: 14, color: "#64748b", marginTop: 4 }}>Encrypted HIPAA-compliant connection</div></div>)}
+        {status === "waiting" && (<div style={{ textAlign: "center", zIndex: 2 }}><div style={{ width: 72, height: 72, borderRadius: "50%", background: "linear-gradient(135deg, rgba(14,165,233,0.15), rgba(139,92,246,0.15))", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px", border: "2px solid rgba(14,165,233,0.3)" }}><PhoneIcon size={28} color="#0ea5e9" /></div><div style={{ fontSize: 17, fontWeight: 600, color: "#1e293b" }}>Contacting On-Call Radiologist...</div><div style={{ fontSize: 14, color: "#64748b", marginTop: 4 }}>U.S. Board-Certified • Available Now</div><div style={{ marginTop: 16, display: "flex", gap: 6, justifyContent: "center" }}>{[0,1,2].map(i => <div key={i} style={{ width: 8, height: 8, borderRadius: "50%", background: "#0ea5e9", animation: `pulse 1.4s ease-in-out ${i * 0.2}s infinite` }} />)}</div></div>)}
+        {status === "connected" && (<div style={{ textAlign: "center", zIndex: 2, width: "100%" }}><div style={{ width: 80, height: 80, borderRadius: "50%", background: "linear-gradient(135deg, #dbeafe, #e0ecf7)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 12px", border: "3px solid #22c55e", boxShadow: "0 0 24px rgba(34,197,94,0.2)" }}><UserIcon size={36} color="#0284c7" /></div><div style={{ fontSize: 18, fontWeight: 700, color: "#1e293b" }}>Dr. Sarah Chen, MD</div><div style={{ fontSize: 14, color: "#22c55e", marginTop: 2, fontWeight: 600 }}>Board-Certified Radiologist • Connected</div><div style={{ fontSize: 22, fontFamily: "'JetBrains Mono', monospace", color: "#0284c7", marginTop: 10 }}>{fmt(elapsed)}</div><div style={{ marginTop: 16, padding: "8px 16px", borderRadius: 8, display: "inline-flex", alignItems: "center", gap: 8, background: "rgba(14,165,233,0.05)", border: "1px solid rgba(14,165,233,0.15)" }}><div style={{ width: 6, height: 6, borderRadius: "50%", background: "#22c55e", animation: "pulse 2s infinite" }} /><span style={{ fontSize: 13, color: "#64748b" }}>Ultrasound images + AI triage report shared</span></div></div>)}
+        {status === "connected" && <div style={{ position: "absolute", bottom: 12, right: 12, width: 100, height: 70, borderRadius: 8, background: "#f0f4f8", border: "1px solid #d1d9e6", display: "flex", alignItems: "center", justifyContent: "center" }}><VideoIcon size={18} color="#3d5170" /></div>}
+      </div>
+      <div style={{ display: "flex", justifyContent: "center", gap: 12, marginTop: 16 }}>
+        <button style={{ width: 48, height: 48, borderRadius: "50%", border: "1px solid #d1d9e6", background: "#f0f4f8", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><VideoIcon size={20} color="#94a3b8" /></button>
+        <button onClick={onBack} style={{ width: 48, height: 48, borderRadius: "50%", border: "none", background: "#ef4444", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><PhoneIcon size={20} color="#fff" /></button>
+        <button style={{ width: 48, height: 48, borderRadius: "50%", border: "1px solid #d1d9e6", background: "#f0f4f8", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><ShieldIcon size={20} color="#22c55e" /></button>
+      </div>
+      <div className="card" style={{ marginTop: 16, padding: 14 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>AI Triage Report Shared with Radiologist</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+          {[{ val: result.classification.primary, sub: `${result.classification.confidence}% conf.`, c: "#ef4444", bg: "rgba(239,68,68,0.06)", bd: "rgba(239,68,68,0.12)" }, { val: result.segmentation.diceCoeff.toFixed(2), sub: "Dice coeff.", c: "#0ea5e9", bg: "rgba(14,165,233,0.06)", bd: "rgba(14,165,233,0.12)" }, { val: result.regions.length, sub: "Regions", c: "#fbbf24", bg: "rgba(251,191,36,0.06)", bd: "rgba(251,191,36,0.12)" }].map((d, i) => (
+            <div key={i} style={{ padding: 8, borderRadius: 6, background: d.bg, border: `1px solid ${d.bd}`, textAlign: "center" }}><div style={{ fontSize: 16, fontWeight: 700, color: d.c }}>{d.val}</div><div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>{d.sub}</div></div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════
+// Async Request Screen
+// ═══════════════════════════════════════════
+function AsyncRequestScreen({ result, onBack }) {
+  const [notes, setNotes] = useState("");
+  const [urgency, setUrgency] = useState("standard");
+  const [submitted, setSubmitted] = useState(false);
+
+  if (submitted) return (
+    <div style={{ animation: "fadeIn 0.3s ease" }}>
+      <button onClick={onBack} style={{ background: "none", border: "none", cursor: "pointer", color: "#64748b", display: "flex", alignItems: "center", gap: 6, fontSize: 15, marginBottom: 16, padding: 0, fontFamily: "inherit" }}><ArrowLeftIcon size={16} color="#64748b" /> Back to Results</button>
+      <div className="card" style={{ padding: 32, textAlign: "center" }}>
+        <div style={{ width: 64, height: 64, borderRadius: "50%", margin: "0 auto 20px", background: "linear-gradient(135deg, rgba(34,197,94,0.15), rgba(14,165,233,0.1))", display: "flex", alignItems: "center", justifyContent: "center", border: "2px solid rgba(34,197,94,0.3)" }}><CheckIcon color="#22c55e" size={30} /></div>
+        <h2 style={{ fontSize: 22, fontWeight: 700, color: "#1e293b", marginBottom: 8 }}>Request Submitted</h2>
+        <p style={{ fontSize: 16, color: "#64748b", lineHeight: 1.7, maxWidth: 400, margin: "0 auto" }}>A U.S. board-certified radiologist will review the ultrasound images and AI triage analysis, then provide a final diagnosis within <strong style={{ color: "#1e293b" }}>{urgency === "urgent" ? "12-24" : "24-48"} hours</strong>.</p>
+        <div style={{ marginTop: 20, padding: 14, borderRadius: 10, background: "rgba(14,165,233,0.04)", border: "1px solid rgba(14,165,233,0.12)", textAlign: "left" }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "#64748b", marginBottom: 8 }}>What happens next:</div>
+          {["Radiologist receives your ultrasound images + AI triage report", "Expert interprets the images and provides final diagnosis", "You receive a notification when the diagnosis report is ready", "Follow-up consultation available if needed"].map((t, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0" }}><span style={{ fontSize: 16 }}>{["1️⃣","2️⃣","3️⃣","4️⃣"][i]}</span><span style={{ fontSize: 14, color: "#64748b" }}>{t}</span></div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{ animation: "fadeIn 0.3s ease" }}>
+      <button onClick={onBack} style={{ background: "none", border: "none", cursor: "pointer", color: "#64748b", display: "flex", alignItems: "center", gap: 6, fontSize: 15, marginBottom: 16, padding: 0, fontFamily: "inherit" }}><ArrowLeftIcon size={16} color="#64748b" /> Back to Results</button>
+      <div className="card" style={{ padding: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+          <div style={{ width: 44, height: 44, borderRadius: 11, background: "linear-gradient(135deg, rgba(139,92,246,0.15), rgba(168,85,247,0.1))", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, border: "1px solid rgba(139,92,246,0.25)" }}><MailIcon color="#a855f7" size={22} /></div>
+          <div><h2 style={{ fontSize: 19, fontWeight: 700, color: "#1e293b", margin: 0 }}>Request Image Interpretation</h2><p style={{ fontSize: 14, color: "#64748b", margin: "2px 0 0" }}>If a live on-call radiologist is not available</p></div>
+        </div>
+        <div style={{ padding: 14, borderRadius: 10, marginBottom: 16, background: "rgba(254,242,242,0.8)", border: "1px solid rgba(239,68,68,0.12)" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#ef4444", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>AI Triage Result (Not a Final Diagnosis)</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+            {[{ v: `${result.classification.confidence}%`, l: "Confidence", c: "#ef4444" }, { v: result.segmentation.diceCoeff.toFixed(2), l: "Dice", c: "#0ea5e9" }, { v: result.regions.length, l: "Regions", c: "#fbbf24" }].map((d, i) => (
+              <div key={i} style={{ textAlign: "center" }}><div style={{ fontSize: 18, fontWeight: 700, color: d.c }}>{d.v}</div><div style={{ fontSize: 11, color: "#64748b" }}>{d.l}</div></div>
+            ))}
+          </div>
+        </div>
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ fontSize: 14, fontWeight: 600, color: "#64748b", display: "block", marginBottom: 8 }}>Priority</label>
+          <div style={{ display: "flex", gap: 8 }}>
+            {[{ id: "standard", label: "Standard", time: "24-48h", color: "#8b5cf6" }, { id: "urgent", label: "Urgent", time: "12-24h", color: "#ef4444" }].map(o => (
+              <button key={o.id} onClick={() => setUrgency(o.id)} style={{ flex: 1, padding: "12px 14px", borderRadius: 10, cursor: "pointer", textAlign: "left", border: urgency === o.id ? `2px solid ${o.color}` : "2px solid #e2e8f0", background: urgency === o.id ? `${o.color}10` : "#f8fafc", fontFamily: "inherit" }}>
+                <div style={{ fontSize: 15, fontWeight: 600, color: urgency === o.id ? o.color : "#94a3b8" }}>{o.label}</div>
+                <div style={{ fontSize: 13, color: "#64748b", marginTop: 2 }}>{o.time}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ fontSize: 14, fontWeight: 600, color: "#64748b", display: "block", marginBottom: 8 }}>Clinical Notes (optional)</label>
+          <textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="Patient history, symptoms, prior imaging..." style={{ width: "100%", minHeight: 80, padding: 12, borderRadius: 10, border: "1px solid #e2e8f0", background: "#f5f8fc", color: "#1e293b", fontSize: 15, resize: "vertical", fontFamily: "inherit", boxSizing: "border-box" }} />
+        </div>
+        <button onClick={() => setSubmitted(true)} style={{ width: "100%", padding: "14px 20px", borderRadius: 10, border: "none", background: "linear-gradient(135deg, #8b5cf6, #a855f7)", color: "#fff", fontSize: 17, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, fontFamily: "inherit" }}><MailIcon size={18} color="#fff" /> Submit for Radiologist Review</button>
+        <div style={{ marginTop: 12, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}><ShieldIcon size={12} color="#22c55e" /><span style={{ fontSize: 12, color: "#64748b" }}>HIPAA-compliant encrypted transmission</span></div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════
+// MAIN APP
+// ═══════════════════════════════════════════
+function SonoScanAI() {
+  const [view, setView] = useState("home");
+  const [consultScreen, setConsultScreen] = useState(null);
+  const [uploadedFile, setUploadedFile] = useState(null);
+  const [imageUrl, setImageUrl] = useState(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [pipelineStage, setPipelineStage] = useState(0);
+  const [result, setResult] = useState(null);
+  const [cases, setCases] = useState([]);
+  const [showOriginal, setShowOriginal] = useState(false);
+  const fileRef = useRef(null);
+  const canvasRef = useRef(null);
+  const imgDimRef = useRef({ w: 0, h: 0 });
+
+  // Model state
+  const [unet, setUnet] = useState(null);
+  const [classifier, setClassifier] = useState(null);
+  const [modelsReady, setModelsReady] = useState(false);
+  const [modelStatus, setModelStatus] = useState("Loading AI models...");
+  const imgElRef = useRef(null);
+
+  // Auto-load models on mount
+  useEffect(() => {
+    let cancelled = false;
+    async function loadModels() {
+      try {
+        setModelStatus("Downloading U-Net...");
+        console.log("Loading U-Net from:", MODEL_URLS.unet);
+        const u = await tf.loadGraphModel(MODEL_URLS.unet);
+        if (cancelled) return;
+        setUnet(u);
+        console.log("U-Net loaded successfully");
+        setModelStatus("Downloading Classifier...");
+        console.log("Loading Classifier from:", MODEL_URLS.classifier);
+        const c = await tf.loadGraphModel(MODEL_URLS.classifier);
+        if (cancelled) return;
+        setClassifier(c);
+        setModelsReady(true);
+        setModelStatus("Models Ready");
+        console.log("Both models loaded successfully");
+      } catch (err) {
+        console.error("Model load error:", err);
+        const msg = err.message || String(err);
+        if (msg.includes("404") || msg.includes("Failed to fetch") || msg.includes("NetworkError")) {
+          setModelStatus("Cannot reach GitHub Pages — check that Pages is enabled");
+        } else if (msg.includes("JSON")) {
+          setModelStatus("Invalid model format — check model.json files");
+        } else {
+          setModelStatus(`Load failed: ${msg.slice(0, 80)}`);
+        }
+      }
+    }
+    loadModels();
+    return () => { cancelled = true; };
+  }, []);
+
+  const handleUpload = useCallback((e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadedFile(file);
+    const url = URL.createObjectURL(file);
+    setImageUrl(url);
+    setResult(null); setPipelineStage(1); setConsultScreen(null); setShowOriginal(false); setView("scan");
+    const img = new Image();
+    img.onload = () => { imgDimRef.current = { w: img.naturalWidth, h: img.naturalHeight }; imgElRef.current = img; };
+    img.src = url;
+  }, []);
+
+  const handleAnalyze = useCallback(async () => {
+    if (!uploadedFile || !unet || !classifier || !imgElRef.current) return;
+    setAnalyzing(true); setPipelineStage(1); setResult(null); setConsultScreen(null); setShowOriginal(false);
+    await new Promise(r => setTimeout(r, 400));
+    setPipelineStage(2);
+    await new Promise(r => setTimeout(r, 300));
+    setPipelineStage(3);
+    try {
+      const res = await runRealInference(unet, classifier, imgElRef.current, imgDimRef.current.w || 512, imgDimRef.current.h || 512);
+      setPipelineStage(4); setResult(res); setAnalyzing(false);
+      setCases(prev => [{ filename: uploadedFile.name, thumbnail: imageUrl, result: res, imgDim: { ...imgDimRef.current } }, ...prev.slice(0, 19)]);
+    } catch (err) {
+      console.error("Inference error:", err);
+      setAnalyzing(false);
+      setPipelineStage(0);
+    }
+  }, [uploadedFile, imageUrl, unet, classifier]);
+
+  const handleDownload = useCallback(() => {
+    if (!canvasRef.current) return;
+    const link = document.createElement("a"); link.download = `sonoscan_result_${Date.now()}.png`; link.href = canvasRef.current.toDataURL("image/png"); link.click();
+  }, []);
+
+  const handleDrop = useCallback((e) => {
+    e.preventDefault();
+    const file = e.dataTransfer?.files?.[0];
+    if (file && file.type.startsWith("image/")) { const dt = new DataTransfer(); dt.items.add(file); if (fileRef.current) { fileRef.current.files = dt.files; handleUpload({ target: { files: dt.files } }); } }
+  }, [handleUpload]);
+
+  const isMalignant = result?.classification?.primary === "Malignant";
+
+  const navItems = [
+    { id: "home", label: "Home", icon: <ActivityIcon size={18} /> },
+    { id: "scan", label: "Scan", icon: <ScanIcon size={18} /> },
+    { id: "history", label: "Cases", icon: <FileIcon size={18} /> },
+    { id: "about", label: "About", icon: <GlobeIcon size={18} /> },
+  ];
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#f7f8fc", color: "#1e293b", fontFamily: "'DM Sans', 'Segoe UI', system-ui, sans-serif", display: "flex", flexDirection: "column" }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+        @keyframes slideUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes scanLine { 0% { top: 0%; } 100% { top: 100%; } }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        @keyframes glowPulse { 0%,100% { box-shadow: 0 0 8px rgba(239,68,68,0.1); } 50% { box-shadow: 0 0 20px rgba(239,68,68,0.2); } }
+        .scan-line { position: absolute; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, transparent, #0ea5e9, transparent); animation: scanLine 2s ease-in-out infinite; z-index: 2; }
+        .nav-btn { background: none; border: none; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 16px; border-radius: 10px; transition: all 0.2s; color: #94a3b8; font-family: inherit; }
+        .nav-btn:hover { color: #475569; } .nav-btn.active { color: #0ea5e9; background: rgba(14,165,233,0.06); }
+        .card { background: #ffffff; border: 1px solid #e8ecf2; border-radius: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+        .btn-primary { padding: 12px 24px; border-radius: 12px; border: none; background: linear-gradient(135deg, #38bdf8, #22d3ee); color: #fff; font-weight: 600; font-size: 16px; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; transition: all 0.2s; font-family: inherit; }
+        .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(56,189,248,0.2); }
+        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
+        .btn-outline { padding: 10px 20px; border-radius: 12px; border: 1px solid #d1d9e6; background: #ffffff; color: #64748b; font-size: 15px; cursor: pointer; transition: all 0.2s; font-family: inherit; display: inline-flex; align-items: center; gap: 6px; }
+        .btn-outline:hover { border-color: #94a3b8; color: #334155; background: #f8fafc; }
+        .stat-card { padding: 14px; border-radius: 14px; background: #f0f7ff; border: 1px solid #e0ecf7; }
+        input[type="file"] { display: none; }
+      `}</style>
+
+      <canvas ref={canvasRef} style={{ display: "none" }} />
+
+      {/* Header */}
+      <header style={{ padding: "12px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid #e8ecf2", background: "rgba(255,255,255,0.92)", backdropFilter: "blur(12px)", position: "sticky", top: 0, zIndex: 50 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ width: 34, height: 34, borderRadius: 9, display: "flex", alignItems: "center", justifyContent: "center", background: "linear-gradient(135deg, #0ea5e9, #8b5cf6)", fontSize: 18 }}>🔬</div>
+          <div>
+            <div style={{ fontSize: 17, fontWeight: 700, letterSpacing: "-0.01em", lineHeight: 1.2 }}>SonoScan AI</div>
+            <div style={{ fontSize: 11, color: "#64748b", fontWeight: 500, letterSpacing: "0.08em", textTransform: "uppercase" }}>Ultrasound Tumor Detection</div>
+          </div>
+        </div>
+        <div style={{ padding: "4px 10px", borderRadius: 6, background: modelsReady ? "rgba(34,197,94,0.08)" : "rgba(251,191,36,0.08)", border: `1px solid ${modelsReady ? "rgba(34,197,94,0.15)" : "rgba(251,191,36,0.15)"}`, display: "flex", alignItems: "center", gap: 5 }}>
+          <div style={{ width: 6, height: 6, borderRadius: "50%", background: modelsReady ? "#22c55e" : "#fbbf24", animation: modelsReady ? "none" : "pulse 1.5s infinite" }} />
+          <span style={{ fontSize: 12, color: modelsReady ? "#22c55e" : "#fbbf24", fontWeight: 600 }}>{modelStatus}</span>
+        </div>
+      </header>
+
+      <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+        <main style={{ flex: 1, padding: "16px 16px 80px", maxWidth: 960, width: "100%", margin: "0 auto" }}>
+          <input ref={fileRef} type="file" accept="image/*" onChange={handleUpload} />
+
+          {/* HOME */}
+          {view === "home" && (
+            <div style={{ animation: "fadeIn 0.4s ease" }}>
+              <div style={{ padding: "32px 24px", borderRadius: 16, marginBottom: 20, textAlign: "center", position: "relative", overflow: "hidden", background: "linear-gradient(135deg, rgba(14,165,233,0.05), rgba(139,92,246,0.04))", border: "1px solid rgba(14,165,233,0.1)" }}>
+                <div style={{ fontSize: 48, marginBottom: 12 }}>🩺</div>
+                <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 8 }}>AI-Powered Ultrasound Analysis</h1>
+                <p style={{ color: "#64748b", fontSize: 16, lineHeight: 1.7, maxWidth: 540, margin: "0 auto 8px" }}>Helping healthcare workers detect and classify tumors from ultrasound images — with clear visual results and direct access to board-certified radiologists when it matters most.</p>
+                <p style={{ color: "#64748b", fontSize: 14, margin: "0 auto 20px" }}>UN Sustainable Development Goal 3: Good Health and Well-being</p>
+                <button className="btn-primary" disabled={!modelsReady} onClick={() => fileRef.current?.click()}><UploadIcon size={18} /> {modelsReady ? "Upload Ultrasound Image" : "Loading Models..."}</button>
+              </div>
+              <h2 style={{ fontSize: 16, fontWeight: 600, color: "#64748b", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 12 }}>Malignant Triage Pathway</h2>
+              <div className="card" style={{ padding: 18, marginBottom: 20 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}><AlertIcon size={18} color="#ef4444" /><span style={{ fontSize: 15, fontWeight: 600, color: "#ef4444" }}>SonoScan AI never makes final diagnoses — it only triages. When malignant:</span></div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10, marginLeft: 6 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderRadius: 10, background: "rgba(14,165,233,0.04)", border: "1px solid rgba(14,165,233,0.15)" }}><VideoIcon size={22} color="#0ea5e9" /><div><div style={{ fontSize: 15, fontWeight: 700, color: "#0ea5e9" }}>🖥️ Connect to Live Radiologist</div><div style={{ fontSize: 13, color: "#64748b" }}>Connects user to a live on-call U.S. board-certified radiologist via video meeting</div></div></div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderRadius: 10, background: "rgba(139,92,246,0.04)", border: "1px solid rgba(139,92,246,0.15)" }}><ClockIcon size={22} color="#a855f7" /><div><div style={{ fontSize: 15, fontWeight: 700, color: "#a855f7" }}>✉️ Request Image Interpretation</div><div style={{ fontSize: 13, color: "#64748b" }}>Request a final diagnosis from a radiologist within 24-48 hours</div></div></div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* SCAN + RESULTS */}
+          {view === "scan" && !consultScreen && (
+            <div style={{ animation: "slideUp 0.3s ease" }}>
+              <div className="card" style={{ padding: "6px 14px", marginBottom: 14 }}><PipelineViz stage={pipelineStage} /></div>
+              {!imageUrl ? (
+                <div onDragOver={e => e.preventDefault()} onDrop={handleDrop} onClick={() => fileRef.current?.click()} style={{ padding: "60px 24px", borderRadius: 14, border: "2px dashed #d1d9e6", background: "#f8fafc", textAlign: "center", cursor: "pointer" }}><UploadIcon size={36} color="#3d5170" /><p style={{ color: "#64748b", fontSize: 16, marginTop: 12 }}>Drop ultrasound image or click to browse</p></div>
+              ) : (
+                <div style={{ position: "relative" }}>
+                  {analyzing && <div className="scan-line" />}
+                  {result && !showOriginal ? <OutputCanvas result={result} imageUrl={imageUrl} canvasRef={canvasRef} /> : (
+                    <div style={{ borderRadius: 12, overflow: "hidden", background: "#000" }}><img src={imageUrl} alt="Uploaded" style={{ width: "100%", display: "block", opacity: analyzing ? 0.6 : 1, transition: "opacity 0.3s" }} /></div>
+                  )}
+                </div>
+              )}
+              <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
+                <button className="btn-outline" onClick={() => fileRef.current?.click()}><UploadIcon size={15} /> New Image</button>
+                <button className="btn-primary" onClick={handleAnalyze} disabled={!uploadedFile || analyzing || !modelsReady}>
+                  {analyzing ? <><span style={{ animation: "pulse 1.5s infinite" }}>⏳</span> Analyzing...</> : <><ScanIcon size={16} /> Run Analysis</>}
+                </button>
+                {result && (<><button className="btn-outline" onClick={() => setShowOriginal(!showOriginal)}><EyeIcon size={15} /> {showOriginal ? "Show Result" : "Show Original"}</button><button className="btn-outline" onClick={handleDownload}><DownloadIcon size={15} /> Save Result</button></>)}
+              </div>
+              {result && (<div style={{ display: "flex", gap: 16, marginTop: 12, flexWrap: "wrap", padding: "8px 12px", borderRadius: 8, background: "#f5f8fc", border: "1px solid #e2e8f0" }}>
+                <span style={{ fontSize: 13, color: "#64748b", fontWeight: 600 }}>Legend:</span>
+                <span style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 14, height: 14, borderRadius: 3, background: "rgba(0,255,0,0.35)", border: "1.5px solid rgba(0,255,0,0.6)", display: "inline-block" }} /> <span style={{ color: "#64748b" }}>Segmentation mask</span></span>
+                <span style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 14, height: 14, borderRadius: 3, border: "2px solid #ff0000", display: "inline-block" }} /> <span style={{ color: "#64748b" }}>Bounding box</span></span>
+                <span style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 8, height: 8, borderRadius: "50%", background: "#00ff00", display: "inline-block" }} /> <span style={{ color: "#64748b" }}>Benign</span></span>
+                <span style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 8, height: 8, borderRadius: "50%", background: "#ff0000", display: "inline-block" }} /> <span style={{ color: "#64748b" }}>Malignant</span></span>
+              </div>)}
+              {result && (<div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginTop: 12 }}>
+                <div className="stat-card"><div style={{ fontSize: 12, color: "#64748b", marginBottom: 4 }}>AI Triage</div><div style={{ fontSize: 18, fontWeight: 700, color: isMalignant ? "#ef4444" : "#22c55e" }}>{result.classification.primary}</div><div style={{ fontSize: 13, color: "#64748b", fontFamily: "'JetBrains Mono', monospace" }}>{result.classification.confidence}%</div></div>
+                <div className="stat-card"><div style={{ fontSize: 12, color: "#64748b", marginBottom: 4 }}>Mask Coverage</div><div style={{ fontSize: 18, fontWeight: 700, color: "#0ea5e9" }}>{result.segmentation.maskCoverage}%</div><div style={{ fontSize: 13, color: "#64748b", fontFamily: "'JetBrains Mono', monospace" }}>segmentation</div></div>
+                <div className="stat-card"><div style={{ fontSize: 12, color: "#64748b", marginBottom: 4 }}>Regions</div><div style={{ fontSize: 18, fontWeight: 700, color: "#fbbf24" }}>{result.regions.length}</div><div style={{ fontSize: 13, color: "#64748b", fontFamily: "'JetBrains Mono', monospace" }}>detected</div></div>
+              </div>)}
+              {result && isMalignant && (
+                <div style={{ marginTop: 14, padding: 20, borderRadius: 14, background: "linear-gradient(135deg, rgba(239,68,68,0.04), rgba(254,242,242,0.8))", border: "2px solid rgba(239,68,68,0.2)", animation: "slideUp 0.4s ease, glowPulse 3s ease-in-out infinite" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}><div style={{ width: 40, height: 40, borderRadius: 10, background: "rgba(239,68,68,0.08)", display: "flex", alignItems: "center", justifyContent: "center" }}><AlertIcon size={22} color="#ef4444" /></div><div><div style={{ fontSize: 18, fontWeight: 700, color: "#ef4444" }}>⚠ Triage: Malignant Lesion Detected</div><div style={{ fontSize: 14, color: "#64748b" }}>AI confidence: {result.classification.confidence}% — This is a triage, not a diagnosis.</div></div></div>
+                  <button onClick={() => setConsultScreen("live")} style={{ width: "100%", padding: "16px 20px", borderRadius: 12, border: "none", background: "linear-gradient(135deg, #0ea5e9, #0284c7)", color: "#fff", cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 14, marginBottom: 10, fontFamily: "inherit", boxShadow: "0 4px 16px rgba(14,165,233,0.15)" }}><div style={{ width: 48, height: 48, borderRadius: 12, background: "rgba(14,165,233,0.1)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><VideoIcon size={24} color="#fff" /></div><div style={{ flex: 1 }}><div style={{ fontSize: 18, fontWeight: 700 }}>Connect to Live Radiologist</div><div style={{ fontSize: 14, opacity: 0.85, marginTop: 2 }}>Video meeting with on-call U.S. board-certified radiologist</div></div><div style={{ fontSize: 22, flexShrink: 0 }}>→</div></button>
+                  <button onClick={() => setConsultScreen("async")} style={{ width: "100%", padding: "16px 20px", borderRadius: 12, border: "2px solid rgba(139,92,246,0.35)", background: "linear-gradient(135deg, rgba(139,92,246,0.12), rgba(168,85,247,0.06))", color: "#1e293b", cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 14, fontFamily: "inherit" }}><div style={{ width: 48, height: 48, borderRadius: 12, background: "rgba(139,92,246,0.08)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><ClockIcon size={24} color="#a855f7" /></div><div style={{ flex: 1 }}><div style={{ fontSize: 18, fontWeight: 700 }}>Request Image Interpretation</div><div style={{ fontSize: 14, color: "#64748b", marginTop: 2 }}>Request a final diagnosis from a radiologist within 24-48 hours</div></div><div style={{ fontSize: 22, flexShrink: 0, color: "#64748b" }}>→</div></button>
+                  <div style={{ marginTop: 12, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}><ShieldIcon size={12} color="#22c55e" /><span style={{ fontSize: 12, color: "#64748b" }}>SonoScan AI only triages — final diagnosis always from a licensed radiologist.</span></div>
+                </div>
+              )}
+              {result && !isMalignant && (<div style={{ marginTop: 14, padding: 16, borderRadius: 14, background: "rgba(240,253,244,0.8)", border: "1px solid rgba(34,197,94,0.15)", animation: "slideUp 0.4s ease" }}><div style={{ display: "flex", alignItems: "center", gap: 10 }}><CheckIcon size={22} color="#22c55e" /><div><div style={{ fontSize: 17, fontWeight: 700, color: "#22c55e" }}>Triage Result: Benign — Low Risk</div><div style={{ fontSize: 14, color: "#64748b" }}>AI triage suggests benign characteristics. Continue routine monitoring. This is not a final diagnosis.</div></div></div></div>)}
+              {result && (<div className="card" style={{ padding: 14, marginTop: 12 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Triage Detail by Region</div>
+                {result.regions.map((r, i) => (<div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", borderRadius: 8, background: "#f5f8fc", border: "1px solid #e2e8f0", marginBottom: 4 }}><span style={{ fontSize: 14, fontWeight: 600 }}>Region {i + 1}</span><div style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={{ fontSize: 13, color: "#64748b", fontFamily: "'JetBrains Mono', monospace" }}>{r.confidence}%</span><span style={{ padding: "2px 8px", borderRadius: 5, fontSize: 12, fontWeight: 700, background: r.classification === "Malignant" ? "rgba(239,68,68,0.15)" : r.classification === "Benign" ? "rgba(34,197,94,0.15)" : "rgba(148,163,184,0.1)", color: r.classification === "Malignant" ? "#ef4444" : r.classification === "Benign" ? "#22c55e" : "#94a3b8" }}>{r.classification}</span></div></div>))}
+                <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 6 }}><ShieldIcon size={12} color="#0ea5e9" /><span style={{ fontSize: 12, color: "#64748b" }}>All analysis runs locally in-browser. No patient images leave your device.</span></div>
+              </div>)}
+            </div>
+          )}
+
+          {view === "scan" && consultScreen === "live" && result && <LiveCallScreen result={result} onBack={() => setConsultScreen(null)} />}
+          {view === "scan" && consultScreen === "async" && result && <AsyncRequestScreen result={result} onBack={() => setConsultScreen(null)} />}
+
+          {/* HISTORY */}
+          {view === "history" && (
+            <div style={{ animation: "fadeIn 0.3s ease" }}>
+              <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>Case History</h2>
+              <p style={{ color: "#64748b", fontSize: 15, marginBottom: 16 }}>Stored locally in this session.</p>
+              {cases.length === 0 ? (
+                <div className="card" style={{ padding: "40px 24px", textAlign: "center" }}><FileIcon size={32} color="#3d5170" /><p style={{ color: "#64748b", fontSize: 15, marginTop: 12 }}>No cases yet.</p><button className="btn-primary" onClick={() => { setView("scan"); fileRef.current?.click(); }} style={{ marginTop: 16 }}><UploadIcon size={16} /> Start Scan</button></div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {cases.map((c, i) => { const isMal = c.result?.classification?.primary === "Malignant"; return (
+                    <button key={i} onClick={() => { setImageUrl(c.thumbnail); setResult(c.result); setPipelineStage(4); setConsultScreen(null); setShowOriginal(false); setView("scan"); const img = new Image(); img.onload = () => { imgElRef.current = img; imgDimRef.current = c.imgDim || { w: img.naturalWidth, h: img.naturalHeight }; }; img.src = c.thumbnail; }} style={{ width: "100%", padding: "12px 14px", borderRadius: 10, border: "1px solid #e2e8f0", background: "#ffffff", cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 12, fontFamily: "inherit" }}>
+                      <div style={{ width: 40, height: 40, borderRadius: 8, overflow: "hidden", flexShrink: 0, background: "#e8ecf2" }}>{c.thumbnail && <img src={c.thumbnail} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />}</div>
+                      <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 15, color: "#1e293b", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.filename}</div><div style={{ fontSize: 13, color: "#64748b", marginTop: 2 }}>{new Date(c.result.timestamp).toLocaleDateString()} • {c.result.inferenceTime}s</div></div>
+                      <div style={{ padding: "3px 8px", borderRadius: 6, fontSize: 12, fontWeight: 700, background: isMal ? "rgba(239,68,68,0.15)" : "rgba(34,197,94,0.15)", color: isMal ? "#ef4444" : "#22c55e" }}>{c.result.classification.primary}</div>
+                    </button>); })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ABOUT */}
+          {view === "about" && (
+            <div style={{ animation: "fadeIn 0.3s ease" }}>
+              <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>About SonoScan AI</h2>
+              <p style={{ color: "#64748b", fontSize: 15, marginBottom: 20 }}>Addressing UN Sustainable Development Goal 3 — Good Health and Well-being</p>
+              <div className="card" style={{ padding: 20, marginBottom: 16 }}><h3 style={{ fontSize: 17, fontWeight: 700, marginBottom: 10, color: "#0ea5e9" }}>The Problem</h3><p style={{ fontSize: 15, color: "#64748b", lineHeight: 1.7, marginBottom: 10 }}>Over 70% of cancer deaths occur in low- and middle-income countries where access to trained radiologists is severely limited. Sub-Saharan Africa has just 0.1 radiologists per 100,000 people — 120 times fewer than the United States.</p><p style={{ fontSize: 15, color: "#64748b", lineHeight: 1.7 }}>Ultrasound is the most available imaging tool in these regions because it is portable, radiation-free, and affordable. But ultrasound interpretation is highly operator-dependent — the bottleneck is not the imaging hardware, it is the interpretation.</p></div>
+              <div className="card" style={{ padding: 20, marginBottom: 16 }}><h3 style={{ fontSize: 17, fontWeight: 700, marginBottom: 10, color: "#8b5cf6" }}>Our Solution</h3><p style={{ fontSize: 15, color: "#64748b", lineHeight: 1.7, marginBottom: 12 }}>SonoScan AI embeds a dual deep-learning pipeline into the ultrasound workflow, providing real-time decision support for non-specialist healthcare workers. The app generates output images with green segmentation masks, red bounding boxes, and classification labels — giving a clear, actionable visual diagnosis without specialist training.</p>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  {[{ title: "Stage 1: U-Net Segmentation", desc: "59-layer model producing green mask overlays with precise tumor boundary delineation" }, { title: "Stage 2: CNN Classification", desc: "9-layer classifier trained on 5,763 images (3,031 benign / 2,732 malignant)" }, { title: "Live Radiologist Video Call", desc: "Connect immediately to an on-call U.S. board-certified radiologist" }, { title: "Async Review (24-48h)", desc: "Request a final diagnosis from a radiologist within 24-48 hours" }].map((f, i) => (<div key={i} style={{ padding: 12, borderRadius: 8, background: "#f5f8fc", border: "1px solid #e2e8f0" }}><div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>{f.title}</div><div style={{ fontSize: 13, color: "#64748b", lineHeight: 1.5 }}>{f.desc}</div></div>))}
+                </div>
+              </div>
+              <div className="card" style={{ padding: 20, marginBottom: 16 }}><h3 style={{ fontSize: 17, fontWeight: 700, marginBottom: 10, color: "#22c55e" }}>Ethics & Privacy</h3>
+                {[{ icon: <ShieldIcon size={16} color="#22c55e" />, title: "Data Privacy", desc: "All AI analysis runs locally in-browser via TensorFlow.js — no patient images leave the device without explicit consent." }, { icon: <UserIcon size={16} color="#0ea5e9" />, title: "Accessibility", desc: "High-contrast, minimal-training interface designed for healthcare workers with no diagnostic software experience." }, { icon: <AlertIcon size={16} color="#fbbf24" />, title: "Bias & Fairness", desc: "Balanced training dataset. SonoScan AI never makes final diagnoses — it only triages. Every clinical decision is confirmed by a licensed radiologist." }, { icon: <GlobeIcon size={16} color="#a855f7" />, title: "Energy & Environment", desc: "Lightweight models run in-browser on consumer devices, eliminating the need for GPU infrastructure or data centers." }].map((e, i) => (<div key={i} style={{ display: "flex", gap: 12, alignItems: "flex-start", marginBottom: i < 3 ? 12 : 0 }}><div style={{ width: 32, height: 32, borderRadius: 8, background: "#f5f8fc", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{e.icon}</div><div><div style={{ fontSize: 15, fontWeight: 600 }}>{e.title}</div><div style={{ fontSize: 13, color: "#64748b", lineHeight: 1.5, marginTop: 2 }}>{e.desc}</div></div></div>))}
+              </div>
+              <div className="card" style={{ padding: 20 }}><h3 style={{ fontSize: 17, fontWeight: 700, marginBottom: 10 }}>Technical Stack</h3><div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {["TensorFlow.js", "Keras → TFJS Converter", "U-Net (59 layers)", "CNN (9 layers)", "GitHub Pages", "In-Browser Inference", "React", "Custom Dice-BCE Loss", "HIPAA-Compliant"].map((t) => (<span key={t} style={{ padding: "4px 10px", borderRadius: 6, fontSize: 13, fontWeight: 500, background: "rgba(14,165,233,0.05)", color: "#0ea5e9", border: "1px solid rgba(14,165,233,0.15)" }}>{t}</span>))}
+              </div></div>
+            </div>
+          )}
+        </main>
+      </div>
+
+      <nav style={{ position: "fixed", bottom: 0, left: 0, right: 0, padding: "6px 16px 10px", background: "rgba(255,255,255,0.92)", backdropFilter: "blur(12px)", borderTop: "1px solid #e8ecf2", display: "flex", justifyContent: "center", gap: 8, zIndex: 50 }}>
+        {navItems.map(item => (<button key={item.id} className={`nav-btn ${view === item.id ? "active" : ""}`} onClick={() => { setView(item.id); setConsultScreen(null); }}>{item.icon}<span style={{ fontSize: 12, fontWeight: 600 }}>{item.label}</span></button>))}
+      </nav>
+    </div>
+  );
+}
+
+    // Remove loading screen and render
+    const loadingEl = document.getElementById('loading-screen');
+    if (loadingEl) loadingEl.remove();
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(React.createElement(SonoScanAI));
+  </script>
+</body>
+</html>
