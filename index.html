@@ -330,8 +330,8 @@ function LiveCallScreen({ result, onBack }) {
       </div>
       <div className="card" style={{ marginTop: 16, padding: 14 }}>
         <div style={{ fontSize: 13, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>AI Triage Report Shared with Radiologist</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-          {[{ val: result.classification.primary, sub: `${result.classification.confidence}% conf.`, c: "#ef4444", bg: "rgba(239,68,68,0.06)", bd: "rgba(239,68,68,0.12)" }, { val: result.segmentation.diceCoeff.toFixed(2), sub: "Dice coeff.", c: "#0ea5e9", bg: "rgba(14,165,233,0.06)", bd: "rgba(14,165,233,0.12)" }, { val: result.regions.length, sub: "Regions", c: "#fbbf24", bg: "rgba(251,191,36,0.06)", bd: "rgba(251,191,36,0.12)" }].map((d, i) => (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 8 }}>
+          {[{ val: result.classification.primary, sub: `${result.classification.confidence}% conf.`, c: "#ef4444", bg: "rgba(239,68,68,0.06)", bd: "rgba(239,68,68,0.12)" }].map((d, i) => (
             <div key={i} style={{ padding: 8, borderRadius: 6, background: d.bg, border: `1px solid ${d.bd}`, textAlign: "center" }}><div style={{ fontSize: 16, fontWeight: 700, color: d.c }}>{d.val}</div><div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>{d.sub}</div></div>
           ))}
         </div>
@@ -372,14 +372,6 @@ function AsyncRequestScreen({ result, onBack }) {
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
           <div style={{ width: 44, height: 44, borderRadius: 11, background: "linear-gradient(135deg, rgba(139,92,246,0.15), rgba(168,85,247,0.1))", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, border: "1px solid rgba(139,92,246,0.25)" }}><MailIcon color="#a855f7" size={22} /></div>
           <div><h2 style={{ fontSize: 19, fontWeight: 700, color: "#1e293b", margin: 0 }}>Request Image Interpretation</h2><p style={{ fontSize: 14, color: "#64748b", margin: "2px 0 0" }}>If a live on-call radiologist is not available</p></div>
-        </div>
-        <div style={{ padding: 14, borderRadius: 10, marginBottom: 16, background: "rgba(254,242,242,0.8)", border: "1px solid rgba(239,68,68,0.12)" }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#ef4444", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>AI Triage Result (Not a Final Diagnosis)</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-            {[{ v: `${result.classification.confidence}%`, l: "Confidence", c: "#ef4444" }, { v: result.segmentation.diceCoeff.toFixed(2), l: "Dice", c: "#0ea5e9" }, { v: result.regions.length, l: "Regions", c: "#fbbf24" }].map((d, i) => (
-              <div key={i} style={{ textAlign: "center" }}><div style={{ fontSize: 18, fontWeight: 700, color: d.c }}>{d.v}</div><div style={{ fontSize: 11, color: "#64748b" }}>{d.l}</div></div>
-            ))}
-          </div>
         </div>
         <div style={{ marginBottom: 16 }}>
           <label style={{ fontSize: 14, fontWeight: 600, color: "#64748b", display: "block", marginBottom: 8 }}>Priority</label>
