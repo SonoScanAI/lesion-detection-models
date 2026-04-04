@@ -1,26 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import * as tf from "tensorflow";
 
-/* ═══════════════════════════════════════════════
-   MODEL URLS — point these at your GitHub Pages
-   ═══════════════════════════════════════════════
-   After pushing the converted models to GitHub and
-   enabling Pages, replace these with your own URLs.
-
-   Repo structure should look like:
-     your-repo/
-       models/
-         unet/
-           model.json
-           group1-shard1of1.bin
-         classifier/
-           model.json
-           group1-shard1of1.bin
-       index.html  (optional)
-
-   GitHub Pages URL pattern:
-     https://<username>.github.io/<repo>/models/unet/model.json
-   ═══════════════════════════════════════════════ */
 const MODEL_URLS = {
   unet: "https://sonoscanai.github.io/lesion-detection-models/models/unet/model.json",
   classifier: "https://sonoscanai.github.io/lesion-detection-models/models/classifier/model.json",
