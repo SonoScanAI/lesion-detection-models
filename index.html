@@ -590,7 +590,7 @@ function SonoScanAI() {
                 <div>
                   {/* TOP — Action buttons */}
                   <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
-                    <button className="btn-outline" style={{ fontSize: 13, padding: "8px 14px" }} onClick={() => fileRef.current?.click()}><UploadIcon size={14} /> New</button>
+                    <button className="btn-outline" style={{ fontSize: 13, padding: "8px 14px" }} onClick={() => fileRef.current?.click()}><UploadIcon size={14} /> Upload</button>
                     <button className="btn-primary" style={{ fontSize: 13, padding: "8px 14px" }} onClick={handleAnalyze} disabled={!uploadedFile || analyzing || !modelsReady}>
                       {analyzing ? <><span style={{ animation: "pulse 1.5s infinite" }}>⏳</span> Analyzing...</> : <><ScanIcon size={14} /> Analyze</>}
                     </button>
@@ -604,12 +604,7 @@ function SonoScanAI() {
                       {result && !showOriginal ? <OutputCanvas result={result} imageUrl={imageUrl} canvasRef={canvasRef} /> : (
                         <div style={{ borderRadius: 12, overflow: "hidden", background: "#000" }}><img src={imageUrl} alt="Uploaded" style={{ width: "100%", display: "block", opacity: analyzing ? 0.6 : 1, transition: "opacity 0.3s" }} /></div>
                       )}
-                      {result && (<div style={{ display: "flex", gap: 12, marginTop: 10, flexWrap: "wrap", padding: "6px 10px", borderRadius: 8, background: "#f5f8fc", border: "1px solid #e2e8f0" }}>
-                        <span style={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>Legend:</span>
-                        <span style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}><span style={{ width: 12, height: 12, borderRadius: 2, background: "rgba(0,255,0,0.35)", border: "1.5px solid rgba(0,255,0,0.6)", display: "inline-block" }} /> <span style={{ color: "#64748b" }}>Mask</span></span>
-                        <span style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}><span style={{ width: 7, height: 7, borderRadius: "50%", background: "#00ff00", display: "inline-block" }} /> <span style={{ color: "#64748b" }}>Benign</span></span>
-                        <span style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}><span style={{ width: 7, height: 7, borderRadius: "50%", background: "#ff0000", display: "inline-block" }} /> <span style={{ color: "#64748b" }}>Malignant</span></span>
-                      </div>)}
+  
                     </div>
 
                     {/* RIGHT — Results panel */}
@@ -623,12 +618,7 @@ function SonoScanAI() {
                           <div style={{ marginTop: 10, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}><ShieldIcon size={12} color="#22c55e" /><span style={{ fontSize: 11, color: "#64748b" }}>SonoScan AI only triages — final diagnosis always from a board-certified radiologist.</span></div>
                         </div>
 
-                        {/* Region detail */}
-                        <div className="card" style={{ padding: 14 }}>
-                          <div style={{ fontSize: 13, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Triage Detail by Region</div>
-                          {result.regions.map((r, i) => (<div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", borderRadius: 8, background: "#f5f8fc", border: "1px solid #e2e8f0", marginBottom: 4 }}><span style={{ fontSize: 14, fontWeight: 600 }}>Region {i + 1}</span><div style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={{ fontSize: 13, color: "#64748b", fontFamily: "'JetBrains Mono', monospace" }}>{r.confidence}%</span><span style={{ padding: "2px 8px", borderRadius: 5, fontSize: 12, fontWeight: 700, background: r.classification === "Malignant" ? "rgba(239,68,68,0.15)" : r.classification === "Benign" ? "rgba(34,197,94,0.15)" : "rgba(148,163,184,0.1)", color: r.classification === "Malignant" ? "#ef4444" : r.classification === "Benign" ? "#22c55e" : "#94a3b8" }}>{r.classification}</span></div></div>))}
-                          <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 6 }}><ShieldIcon size={12} color="#0ea5e9" /><span style={{ fontSize: 12, color: "#64748b" }}>All analysis runs locally in-browser. No patient images leave your device.</span></div>
-                        </div>
+
                       </div>
                     )}
                   </div>
